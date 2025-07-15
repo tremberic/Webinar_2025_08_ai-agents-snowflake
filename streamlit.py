@@ -129,7 +129,7 @@ def process_sse_response(response):
     return text, sql, citations
 
 def main():
-    st.title("Intelligent Sales Assistant")
+    st.title("Webinar Intelligent Sales Assistant")
 
     # Sidebar for new chat
     with st.sidebar:
