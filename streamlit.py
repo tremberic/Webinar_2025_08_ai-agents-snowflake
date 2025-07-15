@@ -22,7 +22,6 @@ def run_snowflake_query(query):
         return None, None
 
 def snowflake_api_call(query: str, limit: int = 10):
-    
     payload = {
         "model": "claude-4-sonnet",
         "messages": [
@@ -48,6 +47,13 @@ def snowflake_api_call(query: str, limit: int = 10):
                     "type": "cortex_search",
                     "name": "search1"
                 }
+            },
+            # HERE API CALL
+            {
+                "tool_spec": {
+                    "type": "http_request",  # or whatever type corresponds to external HTTP calls
+                    "name": "here_maps"
+                }
             }
         ],
         "tool_resources": {
@@ -56,10 +62,18 @@ def snowflake_api_call(query: str, limit: int = 10):
                 "name": CORTEX_SEARCH_SERVICES,
                 "max_results": limit,
                 "id_column": "conversation_id"
+            },
+            # This approach lets the agent call the HERE API when needed and return
+            # geo data that can be displayed on a map.
+            "here_maps": {
+                "method": "GET",
+                "url": "https://router.hereapi.com/v8/routes",  # Example HERE API endpoint
+                "headers": {"Authorization": f"Bearer I6NclWcjeFKXl57Q_IwyajkiXXr2QZg9vb49IZsl80E"},
+                "params": {"transportMode": "car"}
             }
         }
     }
-    
+
     try:
         resp = _snowflake.send_snow_api_request(
             "POST",  # method
