@@ -1,4 +1,3 @@
-#Maintenant sync dans GIT
 import streamlit as st
 import json
 import _snowflake
@@ -7,12 +6,11 @@ import re
 import numpy as np
 from snowflake.snowpark.context import get_active_session
 from call_here_api import (
-    call_routing_here_api,
     call_geocoding_here_api,
+    call_routing_here_api,
     decode_polyline,
+    decode_shape,
     display_map,
-    call_routing_here_api_v7,
-    decode_shape
 )
 
 session = get_active_session()
@@ -25,9 +23,7 @@ CORTEX_MODEL           = "claude-4-sonnet"
 
 
 def process_sse_response(events):
-    text = ""
-    sql = ""
-    citations = []
+    text, sql, citations = "", "", []
     for event in events:
         if event.get("event") == "message.delta":
             for c in event["data"]["delta"].get("content", []):
@@ -81,11 +77,7 @@ def extract_addresses(text: str) -> list[str]:
         return []
 
     full_text, _, _ = process_sse_response(events)
-    st.write("🔍 Debug — raw agent reply:", full_text)
-
     cleaned = re.sub(r"```(?:json)?", "", full_text, flags=re.IGNORECASE).strip()
-    st.write("🔍 Debug — cleaned reply:", cleaned)
-
     m = re.search(r"\[.*\]", cleaned, flags=re.DOTALL)
     if not m:
         st.error("No JSON array found in agent output.")
@@ -107,63 +99,63 @@ def geocode_address(addr: str):
         if not items:
             return None, None
         pos = items[0]["position"]
-        lat, lon = pos["lat"], pos["lng"]
-        st.write(f"🔍 Geocoded '{addr}' → lat: {lat}, lon: {lon}")
-        return lat, lon
+        return pos["lat"], pos["lng"]
     except Exception as e:
         st.error(f"Geocoding failed for '{addr}': {e}")
         return None, None
 
 
 def handle_address_logic(query: str, response_text: str):
-    # 1) Extract addresses from the user query
     addresses = extract_addresses(query)
     st.write("🔍 extracted addresses:", addresses)
 
-    # 2) Fallback to “between X and Y”
     if not addresses:
         m = re.search(r"between\s+(.*?)\s+and\s+(.*)", query, flags=re.IGNORECASE)
         if m:
             addresses = [m.group(1).strip(" ,."), m.group(2).strip(" ,.")]
             st.write("🔍 fallback addresses:", addresses)
 
-    # 3) Single address → just geocode + st.map
+    # Single address → pin on map
     if len(addresses) == 1:
         addr = addresses[0]
-        try:
-            geo = call_geocoding_here_api(addr)
-            items = geo.get("items") or []
-            if not items:
-                st.error(f"No geocoding result for '{addr}'")
-                return
-            pos = items[0]["position"]
-            lat, lon = pos["lat"], pos["lng"]
+        lat, lon = geocode_address(addr)
+        if lat is None:
+            st.error(f"No geocoding result for '{addr}'")
+        else:
             st.write(f"📍 Map for: {addr}")
-            # use st.map for a single point
             st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}))
-        except Exception as e:
-            st.error(f"Geocoding failed for '{addr}': {e}")
         return
 
-    # 4) Two addresses → full route via Snowflake proc + display_map
+    # Two addresses → route via Snowflake proc + draw
     if len(addresses) == 2:
         origin, destination = addresses
 
+        # Geocode them
         lat1, lon1 = geocode_address(origin)
         lat2, lon2 = geocode_address(destination)
         if None in (lat1, lon1, lat2, lon2):
             st.error("Could not geocode one or both addresses.")
             return
 
-        here_v7 = call_routing_here_api_v7((lat1, lon1), (lat2, lon2))
-        coords  = decode_shape(here_v7)
+        # 1) Show both points on a map
+        df_points = pd.DataFrame({
+        "lat": [lat1, lat2],
+        "lon": [lon1, lon2]
+        })
+        st.map(df_points)
+
+        # 2) Call the HERE v8 routing API correctly:
+        st.write("🔍 call_routing_here_api:", (lat1, lon1))
+        here_json, dbg_params = call_routing_here_api((lat1, lon1), (lat2, lon2))
+        st.write("🔍 routing params", dbg_params)
+        
+        coords = decode_polyline(here_json)
         display_map(coords)
-        return
 
-    # 5) otherwise nothing to do
+    
+    return
+
     st.write("ℹ️ No address(es) found to map.")
-
-
 
 
 def run_snowflake_query(query):
@@ -188,9 +180,9 @@ def snowflake_api_call(query: str, limit: int = 10):
         "tool_resources": {
             "analyst1": {"semantic_model_file": SEMANTIC_MODELS},
             "search1": {
-                "name": CORTEX_SEARCH_SERVICES,
+                "name":        CORTEX_SEARCH_SERVICES,
                 "max_results": limit,
-                "id_column": "conversation_id",
+                "id_column":   "conversation_id",
             }
         }
     }
@@ -210,32 +202,35 @@ def snowflake_api_call(query: str, limit: int = 10):
 def main():
     st.title("Webinar Intelligent Sales Assistant")
 
-    with st.sidebar:
-        if st.button("New Conversation"):
-            st.session_state.messages = []
-            st.rerun()
-
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
+    # Display prior conversation
     for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"].replace("•", "\n\n"))
+        role = msg["role"]
+        content = msg["content"]
+        if role == "user":
+            st.markdown(f"**You:** {content}")
+        else:
+            st.markdown(f"**Assistant:** {content}")
 
-    if query := st.chat_input("Would you like to learn?"):
-        st.session_state.messages.append({"role": "user", "content": query})
-        with st.chat_message("user"):
-            st.markdown(query)
+    # Input
+    query = st.text_input("Your question:", key="input")
+    if st.button("Send"):
+        if not query:
+            st.warning("Please enter a question.")
+        else:
+            st.session_state.messages.append({"role": "user", "content": query})
+            st.markdown(f"**You:** {query}")
 
-        with st.spinner("Processing your request..."):
-            response = snowflake_api_call(query, 1)
-            text, sql, citations = process_sse_response(response or [])
+            with st.spinner("Processing…"):
+                response = snowflake_api_call(query, 1)
+                text, sql, citations = process_sse_response(response or [])
 
-        if text:
             st.session_state.messages.append({"role": "assistant", "content": text})
-            with st.chat_message("assistant"):
-                st.markdown(text.replace("•", "\n\n"))
+            st.markdown(f"**Assistant:** {text}")
 
+            # Handle citations
             if citations:
                 st.write("Citations:")
                 for c in citations:
@@ -254,15 +249,17 @@ def main():
                     with st.expander(label):
                         st.write(txt)
 
+            # Handle mapping logic
             handle_address_logic(query, text)
 
-        if sql:
-            st.markdown("### Generated SQL")
-            st.code(sql, language="sql")
-            df = run_snowflake_query(sql)
-            if df is not None:
-                st.write("### Sales Metrics Report")
-                st.dataframe(df)
+            # Show SQL & report
+            if sql:
+                st.markdown("### Generated SQL")
+                st.code(sql, language="sql")
+                df = run_snowflake_query(sql)
+                if df is not None:
+                    st.write("### Sales Metrics Report")
+                    st.dataframe(df)
 
 
 if __name__ == "__main__":

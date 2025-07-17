@@ -29,6 +29,75 @@ CREATE TABLE sales_metrics (
     product_line VARCHAR
 );
 
+CREATE TABLE sales_metrics (
+    deal_id VARCHAR,
+    customer_name VARCHAR,
+    deal_value FLOAT,
+    close_date DATE,
+    sales_stage VARCHAR,
+    win_status BOOLEAN,
+    sales_rep VARCHAR,
+    product_line VARCHAR
+);
+
+
+```sql
+CREATE OR REPLACE TABLE emails_Webinar_2025_08 ( (
+  id             NUMBER AUTOINCREMENT
+                  COMMENT 'Surrogate primary key for each email record',
+  
+  message_id     VARCHAR(255)
+                  COMMENT 'Unique message identifier assigned by the mail provider',
+  
+  thread_id      VARCHAR(255)
+                  COMMENT 'Identifier grouping related messages into a conversation thread',
+  
+  from_address   VARCHAR(320)
+                  COMMENT 'Email address of the sender (max 320 chars per RFC)',
+  
+  to_addresses   VARCHAR(1000)
+                  COMMENT 'Comma‑separated list of primary recipient email addresses',
+  
+  cc_addresses   VARCHAR(1000)
+                  COMMENT 'Comma‑separated list of CC recipient email addresses',
+  
+  bcc_addresses  VARCHAR(1000)
+                  COMMENT 'Comma‑separated list of BCC recipient email addresses',
+  
+  subject        VARCHAR(1000)
+                  COMMENT 'Subject line of the email message',
+  
+  body           STRING
+                  COMMENT 'Full message body (plain‑text or HTML)',
+  
+  sent_at        TIMESTAMP_NTZ
+                  COMMENT 'When the email was sent (no time zone stored)',
+  
+  received_at    TIMESTAMP_NTZ
+                  COMMENT 'When the email was received or ingested',
+  
+  is_read        BOOLEAN DEFAULT FALSE
+                  COMMENT 'Flag indicating whether the user has read this email',
+  
+  created_at     TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+                  COMMENT 'Record insertion timestamp'
+);
+```
+**Column Descriptions**
+
+* **`id`**: Auto‑incrementing surrogate key.
+* **`message_id`**: Provider’s unique message ID (e.g. Gmail/RFC‑822 Message‑ID).
+* **`thread_id`**: Conversation/thread grouping key.
+* **`from_address`**: Sender’s email address.
+* **`to_addresses`**, **`cc_addresses`**, **`bcc_addresses`**: Comma‑separated recipient lists.
+* **`subject`**: Email subject line.
+* **`body`**: The full email payload (text or HTML).
+* **`sent_at`** / **`received_at`**: Timestamps for send and receive events.
+* **`is_read`**: Read/unread status flag.
+* **`created_at`**: When this row was inserted into the table.
+
+
+
 -- First, let's insert data into sales_conversations
 INSERT INTO sales_conversations
 (conversation_id, transcript_text, customer_name, deal_stage, sales_rep, conversation_date, deal_value, product_line)
@@ -81,10 +150,74 @@ VALUES
 
 ('DEAL010', 'UpgradeNow Corp', 65000, '2024-02-18', 'Pending', false, 'Rachel Torres', 'Analytics Pro');
 
+
+
+INSERT INTO emails_Webinar_2025_08 (
+  message_id, thread_id, from_address, to_addresses, cc_addresses, bcc_addresses,
+  subject, body, sent_at, received_at, is_read, created_at
+)
+SELECT
+  UUID_STRING() AS message_id,
+  UUID_STRING() AS thread_id,
+  -- random customer email
+  ARRAY_CONSTRUCT('alice.smith@gmail.com','bob.jones@yahoo.com','carol.lee@outlook.com','dave.wilson@example.com',
+                  'eve.moore@gmail.com','frank.taylor@yahoo.com','grace.anderson@outlook.com','heidi.brown@example.com',
+                  'ivan.johnson@gmail.com','judy.white@yahoo.com')[UNIFORM(0,10, RANDOM())] AS from_address,
+  'sales@snowbins.ca' AS to_addresses,
+  '' AS cc_addresses,
+  '' AS bcc_addresses,
+  -- subject
+  'Request for ' ||
+  ARRAY_CONSTRUCT('10 yd³','15 yd³','20 yd³','30 yd³')[UNIFORM(0,4, RANDOM())] || ' ' ||
+  ARRAY_CONSTRUCT('mixed waste','green waste','construction debris','concrete','metal scrap','furniture','yard waste')
+    [UNIFORM(0,7, RANDOM())] ||
+  ' container rental'
+    AS subject,
+  -- body
+  'Hello SnowBins,\n\n' ||
+  'I would like to rent a ' ||
+  (ARRAY_CONSTRUCT('10 yd³','15 yd³','20 yd³','30 yd³')[UNIFORM(0,4, RANDOM())]) ||
+  ' container for ' ||
+  (ARRAY_CONSTRUCT('mixed waste','green waste','construction debris','concrete','metal scrap','furniture','yard waste')
+    [UNIFORM(0,7, RANDOM())]) ||
+  ', approx ' ||
+  TO_VARCHAR(UNIFORM(1,10, RANDOM())) || ' ' ||
+  IFF( UNIFORM(0,2,RANDOM())=0, 'tons', 'yd³') ||
+  ' to be collected. Please deliver on ' ||
+  TO_VARCHAR(DATEADD('day', UNIFORM(0,30,RANDOM()), '2025-08-01'::DATE)) ||
+  ' for ' || TO_VARCHAR(UNIFORM(3,14,RANDOM())) || ' days at ' ||
+  TO_VARCHAR(UNIFORM(100,999,RANDOM())) || ' ' ||
+  ARRAY_CONSTRUCT('Maple St','Oak St','Pine Ave','Elm Dr','Cedar Blvd','Sunset Blvd','Lincoln Ave','Adams St','Madison Ave','Jefferson St')
+    [UNIFORM(0,10, RANDOM())] ||
+  ', ' ||
+  ARRAY_CONSTRUCT('Los Angeles, CA','San Diego, CA','Sacramento, CA',
+                  'San Jose, CA','Fresno, CA','Bakersfield, CA',
+                  'Oakland, CA','San Francisco, CA','Irvine, CA','Riverside, CA')
+    [UNIFORM(0,10, RANDOM())] ||
+  '\n\nThank you,' ||
+  '\\n' || SPLIT_PART(
+    (ARRAY_CONSTRUCT('alice.smith','bob.jones','carol.lee','dave.wilson','eve.moore',
+                    'frank.taylor','grace.anderson','heidi.brown','ivan.johnson','judy.white')
+      [UNIFORM(0,10,RANDOM())]), '.', 1
+  )
+    AS body,
+  -- timestamps
+  DATEADD('hour', UNIFORM(0,23,RANDOM()),
+    DATEADD('day', -UNIFORM(1,5,RANDOM()), DATEADD('day', UNIFORM(0,30,RANDOM()), '2025-08-01'))
+  ) AS sent_at,
+  DATEADD('minute', UNIFORM(1,60,RANDOM()), sent_at) AS received_at,
+  IFF(UNIFORM(0,2,RANDOM())=0, TRUE, FALSE) AS is_read,
+  CURRENT_TIMESTAMP() AS created_at
+FROM TABLE(GENERATOR(ROWCOUNT => 100));
+
+
+
+
 -- Enable change tracking
 ALTER TABLE sales_conversations SET CHANGE_TRACKING = TRUE;
 
 -- Create the search service
+-- Peut aussi maintenant être fait via l'interfacde de Snowpark
 CREATE OR REPLACE CORTEX SEARCH SERVICE sales_conversation_search
   ON transcript_text
   ATTRIBUTES customer_name, deal_stage, sales_rep, product_line, conversation_date, deal_value
@@ -104,5 +237,39 @@ CREATE OR REPLACE CORTEX SEARCH SERVICE sales_conversation_search
     WHERE conversation_date >= '2024-01-01'  -- Fixed date instead of CURRENT_TIMESTAMP
 );
 
-CREATE OR REPLPNP.ETREMBLAY.MODELSACE STAGE models
+CREATE OR REPLACE PNP.ETREMBLAY.MODELSACE STAGE models
     DIRECTORY = (ENABLE = TRUE);
+
+
+
+    
+- Donner accès à l'API HERE et spécifier sa  KEY
+
+CREATE OR REPLACE NETWORK RULE here_api_rules  
+MODE = EGRESS  
+TYPE = HOST_PORT  
+VALUE_LIST = ('router.hereapi.com','geocode.search.hereapi.com');
+
+CREATE OR REPLACE SECRET here_api_key  
+TYPE = GENERIC_STRING  
+SECRET_STRING = 'I6NclWcjeFKXl57Q_IwyajkiXXr2QZg9vb49IZsl80E'; 
+
+CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION here_api_access_int  
+ALLOWED_NETWORK_RULES = (here_api_rules)  
+ALLOWED_AUTHENTICATION_SECRETS = (here_api_key)  
+ENABLED = TRUE;
+
+GRANT READ ON SECRET here_api_key TO ROLE PNP;
+
+GRANT USAGE ON INTEGRATION here_api_access_int TO ROLE PNP;
+
+--Get Streamlit ID 
+SHOW STREAMLITS IN SCHEMA PNP.ETREMBLAY;
+
+ALTER STREAMLIT PNP.ETREMBLAY.V23DZEU56TC6GE2H --Streamlit ID  
+SET EXTERNAL_ACCESS_INTEGRATIONS = (here_api_access_int)  
+SECRETS = ('here_api_key' = pnp.etremblay.here_api_key);
+
+
+
+
