@@ -3,214 +3,265 @@ import json
 import _snowflake
 import pandas as pd
 import re
-# from geopy.geocoders import Nominatim
 import numpy as np
 from snowflake.snowpark.context import get_active_session
-from call_here_api import call_routing_here_api, call_geocoding_here_api, decode_polyline, display_map
+from call_here_api import (
+    call_routing_here_api,
+    call_geocoding_here_api,
+    decode_polyline,
+    display_map,
+    call_routing_here_api_v7,
+    decode_shape
+)
 
 session = get_active_session()
-# geolocator = call_geocoding_here_api(user_agent="sales_assistant")
 
-API_ENDPOINT = "/api/v2/cortex/agent:run"
-API_TIMEOUT = 50000  # in milliseconds
+API_ENDPOINT           = "/api/v2/cortex/agent:run"
+API_TIMEOUT            = 50_000    # milliseconds
 CORTEX_SEARCH_SERVICES = "pnp.etremblay.sales_conversation_search"
-SEMANTIC_MODELS = "@pnp.etremblay.models/sales_metrics_model.yaml"
+SEMANTIC_MODELS        = "@pnp.etremblay.models/sales_metrics_model.yaml"
+CORTEX_MODEL           = "claude-4-sonnet"
+
+
+def process_sse_response(events):
+    text = ""
+    sql = ""
+    citations = []
+    for event in events:
+        if event.get("event") == "message.delta":
+            for c in event["data"]["delta"].get("content", []):
+                if c["type"] == "text":
+                    text += c["text"]
+                elif c["type"] == "tool_results":
+                    for result in c["tool_results"]["content"]:
+                        if result["type"] == "json":
+                            j = result["json"]
+                            text += j.get("text", "")
+                            sql = j.get("sql", sql)
+                            for sr in j.get("searchResults", []):
+                                citations.append({
+                                    "source_id": sr.get("source_id", ""),
+                                    "doc_id":    sr.get("doc_id", ""),
+                                })
+    return text, sql, citations
 
 
 def extract_addresses(text: str) -> list[str]:
-    st.write("Debug: entering extract_addresses…")
-    # ── street number ── street name & type ── city/etc ── optional province/state ── optional ZIP or postal code
-    pattern = (
-        r"\d{1,6}\s+"  # street number
-        r"[\w\.\s]+?"  # street name (incl. dots, spaces)
-        r"(?:Street|St\.?|Avenue|Ave\.?|Road|Rd\.?"
-        r"|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?"
-        r"|Way|Parkway|Pkwy|Court|Ct\.?|Place|Pl\.?"
-        r"|Terrace|Ter\.?|Circle|Cir\.?)"  # street type
-        r"|Rue|R\.?)"  # ← added Rue/R.
-        r"[\w\.\s,]*?"  # rest of address (city, separators)
-        r"(?:[A-Za-z]{2})?"  # optional state/province code (e.g. CA, QC)
-        r"(?:\s*\d{5}(?:-\d{4})?"  # optional US ZIP (12345 or 12345‑6789)
-        r"|\s*[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d)?"  # or optional Canadian postal code (A1A 1A1)
+    st.write("🔍 Debug: asking Cortex to extract addresses…")
+    prompt = (
+        "Extract every full street address from this text and output **only** "
+        "a JSON array of strings (no markdown, no explanation). For example:\n"
+        '["123 Main St City, ST 12345", "456 Rue Example Montréal QC H2X 1Y4"]\n\n'
+        f"Text:\n```{text}```"
     )
-    # IGNORECASE so “Ave.” or “ave” both match
-    matches = re.findall(pattern, text, flags=re.IGNORECASE)
-    # strip extra whitespace
-    return [m.strip() for m in matches]
+    payload = {
+        "model": CORTEX_MODEL,
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": prompt}]}
+        ],
+    }
+    resp = _snowflake.send_snow_api_request(
+        "POST", API_ENDPOINT, {}, {}, payload, None, API_TIMEOUT
+    )
+    status      = resp.get("status")
+    content_str = resp.get("content", "")
+
+    st.write("❗ RAW response status:", status)
+    st.write("❗ RAW response content:", repr(content_str))
+
+    if status != 200:
+        st.error(f"Agent error {status}")
+        return []
+
+    try:
+        events = json.loads(content_str)
+    except json.JSONDecodeError as e:
+        st.error(f"Failed to parse SSE JSON: {e}")
+        return []
+
+    full_text, _, _ = process_sse_response(events)
+    st.write("🔍 Debug — raw agent reply:", full_text)
+
+    cleaned = re.sub(r"```(?:json)?", "", full_text, flags=re.IGNORECASE).strip()
+    st.write("🔍 Debug — cleaned reply:", cleaned)
+
+    m = re.search(r"\[.*\]", cleaned, flags=re.DOTALL)
+    if not m:
+        st.error("No JSON array found in agent output.")
+        return []
+
+    try:
+        addresses = json.loads(m.group(0))
+        st.write("🔍 Debug — parsed addresses:", addresses)
+        return addresses
+    except json.JSONDecodeError as e:
+        st.error(f"Failed to decode JSON array: {e}")
+        return []
 
 
 def geocode_address(addr: str):
     try:
-        loc = call_geocoding_here_api(addr)
-        return (loc.latitude, loc.longitude) if loc else (None, None)
+        geo = call_geocoding_here_api(addr)
+        items = geo.get("items") or []
+        if not items:
+            return None, None
+        pos = items[0]["position"]
+        lat, lon = pos["lat"], pos["lng"]
+        st.write(f"🔍 Geocoded '{addr}' → lat: {lat}, lon: {lon}")
+        return lat, lon
     except Exception as e:
-        st.error(f"Geocoding failed: {e}")
-        return (None, None)
+        st.error(f"Geocoding failed for '{addr}': {e}")
+        return None, None
 
 
 def handle_address_logic(query: str, response_text: str):
-    combined_text = f"{query} {response_text}"
-    addresses = extract_addresses(combined_text)
+    # 1) Extract addresses from the user query
+    addresses = extract_addresses(query)
+    st.write("🔍 extracted addresses:", addresses)
 
-    # st.write("Dans handle_address_logic  {addresses}")
-    st.write(f"Dans handle_address_logic: {addresses}")
-    if len(addresses) >= 2:
-        st.write("Dans handle_address_logic len(addresses) >= 2")
-        origin = addresses[0]
-        destination = addresses[1]
+    # 2) Fallback to “between X and Y”
+    if not addresses:
+        m = re.search(r"between\s+(.*?)\s+and\s+(.*)", query, flags=re.IGNORECASE)
+        if m:
+            addresses = [m.group(1).strip(" ,."), m.group(2).strip(" ,.")]
+            st.write("🔍 fallback addresses:", addresses)
+
+    # 3) Single address → just geocode + st.map
+    if len(addresses) == 1:
+        addr = addresses[0]
+        try:
+            geo = call_geocoding_here_api(addr)
+            items = geo.get("items") or []
+            if not items:
+                st.error(f"No geocoding result for '{addr}'")
+                return
+            pos = items[0]["position"]
+            lat, lon = pos["lat"], pos["lng"]
+            st.write(f"📍 Map for: {addr}")
+            # use st.map for a single point
+            st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}))
+        except Exception as e:
+            st.error(f"Geocoding failed for '{addr}': {e}")
+        return
+
+    # 4) Two addresses → full route via Snowflake proc + display_map
+    if len(addresses) == 2:
+        origin, destination = addresses
+
         lat1, lon1 = geocode_address(origin)
         lat2, lon2 = geocode_address(destination)
-        if None not in (lat1, lon1, lat2, lon2):
-            st.write("call_routing_here_api 1")
-            here_json = call_routing_here_api((lat1, lon1), (lat2, lon2))
-            coords = decode_polyline(here_json)
-            display_map(coords)
-        else:
+        if None in (lat1, lon1, lat2, lon2):
             st.error("Could not geocode one or both addresses.")
-    elif len(addresses) == 1:
-        st.write("call geocode_address11")
-        lat, lon = geocode_address(addresses[0])
-        if lat is not None and lon is not None:
-            st.write("DRAW MAP")
-            st.write(f"Map for: {addresses[0]}")
-            st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}))
+            return
+
+        here_v7 = call_routing_here_api_v7((lat1, lon1), (lat2, lon2))
+        coords  = decode_shape(here_v7)
+        display_map(coords)
+        return
+
+    # 5) otherwise nothing to do
+    st.write("ℹ️ No address(es) found to map.")
+
+
 
 
 def run_snowflake_query(query):
     try:
-        df = session.sql(query.replace(';', ''))
-        return df
+        return session.sql(query.replace(";", ""))
     except Exception as e:
-        st.error(f"Error executing SQL: {str(e)}")
-        return None, None
+        st.error(f"Error executing SQL: {e}")
+        return None
 
 
 def snowflake_api_call(query: str, limit: int = 10):
     payload = {
         "model": "claude-4-sonnet",
         "messages": [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": query}]
-            }
+            {"role": "user", "content": [{"type": "text", "text": query}]}
         ],
         "tools": [
             {"tool_spec": {"type": "cortex_analyst_text_to_sql", "name": "analyst1"}},
-            {"tool_spec": {"type": "cortex_search", "name": "search1"}},
-            {"tool_spec": {"type": "http_request", "name": "here_maps"}}
+            {"tool_spec": {"type": "cortex_search",               "name": "search1"}},
+            {"tool_spec": {"type": "http_request",               "name": "here_maps"}}
         ],
         "tool_resources": {
             "analyst1": {"semantic_model_file": SEMANTIC_MODELS},
             "search1": {
                 "name": CORTEX_SEARCH_SERVICES,
                 "max_results": limit,
-                "id_column": "conversation_id"
+                "id_column": "conversation_id",
             }
         }
     }
-
     try:
         resp = _snowflake.send_snow_api_request(
             "POST", API_ENDPOINT, {}, {}, payload, None, API_TIMEOUT
         )
         if resp["status"] != 200:
-            st.error(f"❌ HTTP Error: {resp['status']} - {resp.get('reason', 'Unknown reason')}")
-            st.error(f"Response details: {resp}")
+            st.error(f"❌ HTTP Error: {resp['status']}")
             return None
         return json.loads(resp["content"])
     except Exception as e:
-        st.error(f"Error making request: {str(e)}")
+        st.error(f"Error making request: {e}")
         return None
-
-
-def process_sse_response(response):
-    text = ""
-    sql = ""
-    citations = []
-    if not response or isinstance(response, str):
-        return text, sql, citations
-    try:
-        for event in response:
-            if event.get('event') == "message.delta":
-                print("ALLOsss34")
-                data = event.get('data', {})
-                delta = data.get('delta', {})
-                for content_item in delta.get('content', []):
-                    content_type = content_item.get('type')
-                    if content_type == "tool_results":
-                        tool_results = content_item.get('tool_results', {})
-                        if 'content' in tool_results:
-                            for result in tool_results['content']:
-                                if result.get('type') == 'json':
-                                    text += result.get('json', {}).get('text', '')
-                                    sql = result.get('json', {}).get('sql', '')
-                                    for sr in result.get('json', {}).get('searchResults', []):
-                                        citations.append({
-                                            'source_id': sr.get('source_id', ''),
-                                            'doc_id': sr.get('doc_id', '')
-                                        })
-                    elif content_type == 'text':
-                        text += content_item.get('text', '')
-    except Exception as e:
-        st.error(f"Error processing events: {str(e)}")
-    return text, sql, citations
 
 
 def main():
     st.title("Webinar Intelligent Sales Assistant")
 
     with st.sidebar:
-        if st.button("New Conversation", key="new_chat"):
+        if st.button("New Conversation"):
             st.session_state.messages = []
             st.rerun()
 
-    if 'messages' not in st.session_state:
+    if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    for message in st.session_state.messages:
-        with st.chat_message(message['role']):
-            st.markdown(message['content'].replace("•", "\n\n"))
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"].replace("•", "\n\n"))
 
     if query := st.chat_input("Would you like to learn?"):
-        with st.chat_message("user"):
-
-            st.markdown(query)
         st.session_state.messages.append({"role": "user", "content": query})
+        with st.chat_message("user"):
+            st.markdown(query)
 
         with st.spinner("Processing your request..."):
             response = snowflake_api_call(query, 1)
-            text, sql, citations = process_sse_response(response)
+            text, sql, citations = process_sse_response(response or [])
 
         if text:
-
-            text = text.replace("【†", "[").replace("†】", "]")
             st.session_state.messages.append({"role": "assistant", "content": text})
             with st.chat_message("assistant"):
                 st.markdown(text.replace("•", "\n\n"))
-            st.write("ALLO3")
+
             if citations:
                 st.write("Citations:")
-                for citation in citations:
-                    doc_id = citation.get("doc_id", "")
-                    if doc_id:
-                        query = f"SELECT transcript_text FROM sales_conversations WHERE conversation_id = '{doc_id}'"
-                        result = run_snowflake_query(query)
-                        result_df = result.to_pandas()
-                        transcript_text = result_df.iloc[0, 0] if not result_df.empty else "No transcript available"
-                        with st.expander(f"[{citation.get('source_id', '')}]"):
-                            st.write(transcript_text)
+                for c in citations:
+                    label = str(c.get("source_id", "")) or "source"
+                    q = (
+                        "SELECT transcript_text "
+                        "FROM sales_conversations "
+                        f"WHERE conversation_id = '{c.get('doc_id','')}'"
+                    )
+                    df = run_snowflake_query(q)
+                    txt = "No transcript available"
+                    if df is not None:
+                        pdf = df.to_pandas()
+                        if not pdf.empty:
+                            txt = pdf.iloc[0, 0]
+                    with st.expander(label):
+                        st.write(txt)
 
-            # NEW: Automatically handle address logic
-            st.write("CALL handle_address_logic(query")
             handle_address_logic(query, text)
 
         if sql:
             st.markdown("### Generated SQL")
             st.code(sql, language="sql")
-            sales_results = run_snowflake_query(sql)
-            if sales_results:
+            df = run_snowflake_query(sql)
+            if df is not None:
                 st.write("### Sales Metrics Report")
-                st.dataframe(sales_results)
+                st.dataframe(df)
 
 
 if __name__ == "__main__":
