@@ -1,0 +1,11 @@
+name: app_environment
+channels:
+  - snowflake
+dependencies:
+  - geopy=2.4.1
+  - pandas=2.2.3
+  - pydeck=0.9.1
+  - python=3.11.*
+  - requests=2.32.4
+  - snowflake-snowpark-python=
+  - streamlit=
