@@ -42,7 +42,7 @@ CREATE TABLE sales_metrics (
 
 
 ```sql
-CREATE OR REPLACE TABLE emails_Webinar_2025_08 ( (
+CREATE OR REPLACE TABLE emails_webinar_202508 ( (
   id             NUMBER AUTOINCREMENT
                   COMMENT 'Surrogate primary key for each email record',
   
@@ -152,65 +152,151 @@ VALUES
 
 
 
-INSERT INTO emails_Webinar_2025_08 (
-  message_id, thread_id, from_address, to_addresses, cc_addresses, bcc_addresses,
-  subject, body, sent_at, received_at, is_read, created_at
+INSERT INTO emails_webinar_202508 (
+  message_id,
+  thread_id,
+  from_address,
+  to_addresses,
+  cc_addresses,
+  bcc_addresses,
+  subject,
+  body,
+  sent_at,
+  received_at,
+  is_read,
+  created_at
 )
 SELECT
-  UUID_STRING() AS message_id,
-  UUID_STRING() AS thread_id,
-  -- random customer email
-  ARRAY_CONSTRUCT('alice.smith@gmail.com','bob.jones@yahoo.com','carol.lee@outlook.com','dave.wilson@example.com',
-                  'eve.moore@gmail.com','frank.taylor@yahoo.com','grace.anderson@outlook.com','heidi.brown@example.com',
-                  'ivan.johnson@gmail.com','judy.white@yahoo.com')[UNIFORM(0,10, RANDOM())] AS from_address,
-  'sales@snowbins.ca' AS to_addresses,
-  '' AS cc_addresses,
-  '' AS bcc_addresses,
-  -- subject
-  'Request for ' ||
-  ARRAY_CONSTRUCT('10 yd³','15 yd³','20 yd³','30 yd³')[UNIFORM(0,4, RANDOM())] || ' ' ||
-  ARRAY_CONSTRUCT('mixed waste','green waste','construction debris','concrete','metal scrap','furniture','yard waste')
-    [UNIFORM(0,7, RANDOM())] ||
-  ' container rental'
-    AS subject,
-  -- body
-  'Hello SnowBins,\n\n' ||
-  'I would like to rent a ' ||
-  (ARRAY_CONSTRUCT('10 yd³','15 yd³','20 yd³','30 yd³')[UNIFORM(0,4, RANDOM())]) ||
-  ' container for ' ||
-  (ARRAY_CONSTRUCT('mixed waste','green waste','construction debris','concrete','metal scrap','furniture','yard waste')
-    [UNIFORM(0,7, RANDOM())]) ||
-  ', approx ' ||
-  TO_VARCHAR(UNIFORM(1,10, RANDOM())) || ' ' ||
-  IFF( UNIFORM(0,2,RANDOM())=0, 'tons', 'yd³') ||
-  ' to be collected. Please deliver on ' ||
-  TO_VARCHAR(DATEADD('day', UNIFORM(0,30,RANDOM()), '2025-08-01'::DATE)) ||
-  ' for ' || TO_VARCHAR(UNIFORM(3,14,RANDOM())) || ' days at ' ||
-  TO_VARCHAR(UNIFORM(100,999,RANDOM())) || ' ' ||
-  ARRAY_CONSTRUCT('Maple St','Oak St','Pine Ave','Elm Dr','Cedar Blvd','Sunset Blvd','Lincoln Ave','Adams St','Madison Ave','Jefferson St')
-    [UNIFORM(0,10, RANDOM())] ||
-  ', ' ||
-  ARRAY_CONSTRUCT('Los Angeles, CA','San Diego, CA','Sacramento, CA',
-                  'San Jose, CA','Fresno, CA','Bakersfield, CA',
-                  'Oakland, CA','San Francisco, CA','Irvine, CA','Riverside, CA')
-    [UNIFORM(0,10, RANDOM())] ||
-  '\n\nThank you,' ||
-  '\\n' || SPLIT_PART(
-    (ARRAY_CONSTRUCT('alice.smith','bob.jones','carol.lee','dave.wilson','eve.moore',
-                    'frank.taylor','grace.anderson','heidi.brown','ivan.johnson','judy.white')
-      [UNIFORM(0,10,RANDOM())]), '.', 1
-  )
-    AS body,
-  -- timestamps
-  DATEADD('hour', UNIFORM(0,23,RANDOM()),
-    DATEADD('day', -UNIFORM(1,5,RANDOM()), DATEADD('day', UNIFORM(0,30,RANDOM()), '2025-08-01'))
-  ) AS sent_at,
-  DATEADD('minute', UNIFORM(1,60,RANDOM()), sent_at) AS received_at,
-  IFF(UNIFORM(0,2,RANDOM())=0, TRUE, FALSE) AS is_read,
-  CURRENT_TIMESTAMP() AS created_at
+  UUID_STRING()                                                                                             AS message_id,
+  UUID_STRING()                                                                                             AS thread_id,
+
+  -- customer email
+  ARRAY_CONSTRUCT(
+    'alice.smith@gmail.com','bob.jones@yahoo.com','carol.lee@outlook.com',
+    'dave.wilson@example.com','eve.moore@gmail.com','frank.taylor@yahoo.com',
+    'grace.anderson@outlook.com','heidi.brown@example.com',
+    'ivan.johnson@gmail.com','judy.white@yahoo.com'
+  )[UNIFORM(0,10,RANDOM())]::VARCHAR                                                                         AS from_address,
+
+  'sales@snowbins.ca'                                                                                       AS to_addresses,
+  ''                                                                                                        AS cc_addresses,
+  ''                                                                                                        AS bcc_addresses,
+
+  /* SUBJECT – always complete */
+  'Request for '
+    || ARRAY_CONSTRUCT('10 yd³','15 yd³','20 yd³','30 yd³')[UNIFORM(0,4,RANDOM())]::VARCHAR
+    || ' '
+    || ARRAY_CONSTRUCT(
+         'mixed waste','green waste','construction debris','concrete',
+         'metal scrap','furniture','yard waste'
+       )[UNIFORM(0,7,RANDOM())]::VARCHAR
+    || ' container rental'                                                                                   AS subject,
+
+  /* BODY – 80% precise, 20% vague */
+  CASE
+    WHEN UNIFORM(0,10,RANDOM()) < 8 THEN
+      /* precise branch */
+      ARRAY_CONSTRUCT('Hello','Hi','Greetings','Dear team')[UNIFORM(0,4,RANDOM())]::VARCHAR
+      || ' SnowBins,' || '\n\n'
+      || 'I need to rent a '
+      || ARRAY_CONSTRUCT('10 yd³','15 yd³','20 yd³','30 yd³')[UNIFORM(0,4,RANDOM())]::VARCHAR
+      || ' container for '
+      || ARRAY_CONSTRUCT(
+           'mixed waste','green waste','construction debris','concrete',
+           'metal scrap','furniture','yard waste'
+         )[UNIFORM(0,7,RANDOM())]::VARCHAR
+      || ', approx ' || TO_VARCHAR(UNIFORM(1,10,RANDOM()))
+      || IFF(UNIFORM(0,2,RANDOM())=0,' tons',' yd³')
+      || '. Please deliver on '
+      /* four date formats */
+      || CASE UNIFORM(0,4,RANDOM())
+           WHEN 0 THEN TO_CHAR(
+                        DATEADD('day', UNIFORM(0,30,RANDOM()), '2025-08-01'::DATE),
+                        'YYYY-MM-DD'
+                      )
+           WHEN 1 THEN TO_CHAR(
+                        DATEADD('day', UNIFORM(0,30,RANDOM()), '2025-08-01'::DATE),
+                        'Month DD, YYYY'
+                      )
+           WHEN 2 THEN TO_CHAR(
+                        DATEADD('day', UNIFORM(0,30,RANDOM()), '2025-08-01'::DATE),
+                        'DD/MM/YYYY'
+                      )
+           ELSE      TO_CHAR(
+                        DATEADD('day', UNIFORM(0,30,RANDOM()), '2025-08-01'::DATE),
+                        'DD Mon YYYY'
+                      )
+         END
+      || ' for ' || TO_VARCHAR(UNIFORM(3,14,RANDOM())) || ' days at '
+      || TO_VARCHAR(UNIFORM(100,999,RANDOM())) || ' '
+      || ARRAY_CONSTRUCT(
+           'Maple St','Oak St','Pine Ave','Elm Dr','Cedar Blvd',
+           'Sunset Blvd','Lincoln Ave','Adams St','Madison Ave','Jefferson St'
+         )[UNIFORM(0,10,RANDOM())]::VARCHAR
+      || ', '
+      || ARRAY_CONSTRUCT(
+           'Los Angeles, CA','San Diego, CA','Sacramento, CA','San Jose, CA',
+           'Fresno, CA','Bakersfield, CA','Oakland, CA','San Francisco, CA',
+           'Irvine, CA','Riverside, CA'
+         )[UNIFORM(0,10,RANDOM())]::VARCHAR
+      || '\n\n'
+      || ARRAY_CONSTRUCT('Thanks,','Best regards,','Cheers,','Sincerely,')[UNIFORM(0,4,RANDOM())]::VARCHAR
+      || '\n'
+      || SPLIT_PART(
+           ARRAY_CONSTRUCT(
+             'alice.smith@gmail.com','bob.jones@yahoo.com','carol.lee@outlook.com',
+             'dave.wilson@example.com','eve.moore@gmail.com','frank.taylor@yahoo.com',
+             'grace.anderson@outlook.com','heidi.brown@example.com',
+             'ivan.johnson@gmail.com','judy.white@yahoo.com'
+           )[UNIFORM(0,10,RANDOM())]::VARCHAR,
+           '@',1
+         )
+
+    ELSE
+      /* vague branch */
+      ARRAY_CONSTRUCT('Hello','Hi','Greetings')[UNIFORM(0,3,RANDOM())]::VARCHAR
+      || ' SnowBins,' || '\n\n'
+      || 'I need '
+      || ARRAY_CONSTRUCT('some containers','a few bins')[UNIFORM(0,2,RANDOM())]::VARCHAR
+      || ' for '
+      || ARRAY_CONSTRUCT('green waste','mixed waste','debris')[UNIFORM(0,3,RANDOM())]::VARCHAR
+      || ' '
+      || ARRAY_CONSTRUCT('end of August','early September')[UNIFORM(0,2,RANDOM())]::VARCHAR
+      || ' at my usual location.'
+      || '\n\n'
+      || ARRAY_CONSTRUCT('Cheers,','Sincerely,')[UNIFORM(0,2,RANDOM())]::VARCHAR
+      || '\n'
+      || SPLIT_PART(
+           ARRAY_CONSTRUCT(
+             'alice.smith@gmail.com','bob.jones@yahoo.com','carol.lee@outlook.com',
+             'dave.wilson@example.com','eve.moore@gmail.com','frank.taylor@yahoo.com',
+             'grace.anderson@outlook.com','heidi.brown@example.com',
+             'ivan.johnson@gmail.com','judy.white@yahoo.com'
+           )[UNIFORM(0,10,RANDOM())]::VARCHAR,
+           '@',1
+         )
+  END                                                                                                       AS body,
+  /* sent_at: random Aug 2025, minus 1–5 days, plus random hour */
+  DATEADD(
+    'hour',
+    UNIFORM(0,23,RANDOM()),
+    DATEADD(
+      'day',
+      -UNIFORM(1,5,RANDOM()),
+      DATEADD('day', UNIFORM(0,30,RANDOM()), '2025-08-01'::DATE)
+    )
+  )                                                                                                         AS sent_at,
+
+  /* received_at: 1–60 minutes later */
+  DATEADD('minute', UNIFORM(1,60,RANDOM()), sent_at)                                                        AS received_at,
+
+  /* is_read */
+  IFF(UNIFORM(0,2,RANDOM())=0, TRUE, FALSE)                                                                  AS is_read,
+
+  CURRENT_TIMESTAMP()                                                                                       AS created_at
 FROM TABLE(GENERATOR(ROWCOUNT => 100));
 
-
+ALTER TABLE emails_webinar_202508 SET CHANGE_TRACKING = TRUE;
 
 
 -- Enable change tracking
